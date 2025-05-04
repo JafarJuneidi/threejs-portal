@@ -7,8 +7,46 @@ import firefliesVertexShader from "./shaders/fireflies/vertex.glsl";
 import firefliesFragmentShader from "./shaders/fireflies/fragment.glsl";
 import portalVertexShader from "./shaders/portal/vertex.glsl";
 import portalFragmentShader from "./shaders/portal/fragment.glsl";
+import * as CANNON from "cannon-es";
 
 const pixelRatio = Math.min(window.devicePixelRatio, 2);
+
+/**
+ * Physics
+ */
+// cannon: World
+const world = new CANNON.World();
+world.broadphase = new CANNON.SAPBroadphase(world);
+world.allowSleep = true;
+world.gravity.set(0, -9.82, 0);
+
+// cannon: Materials
+const defaultMaterial = new CANNON.Material("default");
+
+const defaultContactMaterial = new CANNON.ContactMaterial(
+  defaultMaterial,
+  defaultMaterial,
+  {
+    friction: 3,
+    restitution: 0.7,
+  },
+);
+world.addContactMaterial(defaultContactMaterial);
+// With this line bellow I won't have to add material property to each Body
+world.defaultContactMaterial = defaultContactMaterial;
+
+/**
+ * Keys
+ */
+const keys = {};
+
+window.addEventListener("keydown", (event) => {
+  keys[event.key] = true;
+});
+
+window.addEventListener("keyup", (event) => {
+  keys[event.key] = false;
+});
 
 /**
  * Base
@@ -69,6 +107,8 @@ const poleLightMaterial = new THREE.MeshBasicMaterial({ color: 0xffffe5 });
 /**
  * Model
  */
+let ballMesh = null;
+let ballBody = null;
 gltfLoader.load("portal.glb", (gltf) => {
   const bakedMesh = gltf.scene.children.find((child) => child.name === "baked");
   bakedMesh.material = bakedMaterial;
@@ -87,6 +127,89 @@ gltfLoader.load("portal.glb", (gltf) => {
   poleLightAMesh.material = poleLightMaterial;
   poleLightBMesh.material = poleLightMaterial;
   scene.add(gltf.scene);
+
+  /**
+   * Physics
+   */
+  // cannon: floorBody
+  const floorShape = new CANNON.Box(new CANNON.Vec3(2, 0.1, 2));
+  const floorBody = new CANNON.Body({
+    mass: 0,
+    position: new THREE.Vector3(0, -0.1, 0),
+    shape: floorShape,
+  });
+  world.addBody(floorBody);
+
+  // cannon: leftFence
+  const leftFenceShape = new CANNON.Box(new CANNON.Vec3(0.1, 0.3, 2));
+  const leftFenceBody = new CANNON.Body({
+    mass: 0,
+    position: new THREE.Vector3(-0.8, 0.15, 0),
+    shape: leftFenceShape,
+  });
+  world.addBody(leftFenceBody);
+
+  // cannon: rightFence
+  const rightFenceShape = new CANNON.Box(new CANNON.Vec3(0.1, 0.3, 2));
+  const rightFenceBody = new CANNON.Body({
+    mass: 0,
+    position: new THREE.Vector3(0.8, 0.15, 0),
+    shape: rightFenceShape,
+  });
+  world.addBody(rightFenceBody);
+
+  // cannon: firstStep
+  const firstStepShape = new CANNON.Box(new CANNON.Vec3(0.5, 0.05, 0.1));
+  const firstStepBody = new CANNON.Body({
+    mass: 0,
+    position: new THREE.Vector3(0, 0, -1.2),
+    shape: firstStepShape,
+  });
+  world.addBody(firstStepBody);
+
+  // cannon: secondStep
+  const secondStepShape = new CANNON.Box(new CANNON.Vec3(0.5, 0.1, 0.1));
+  const secondStepBody = new CANNON.Body({
+    mass: 0,
+    position: new THREE.Vector3(0, 0, -1.4),
+    shape: secondStepShape,
+  });
+  world.addBody(secondStepBody);
+
+  // cannon: thirdStep
+  const thirdStepShape = new CANNON.Box(new CANNON.Vec3(0.5, 0.15, 0.1));
+  const thirdStepBody = new CANNON.Body({
+    mass: 0,
+    position: new THREE.Vector3(0, 0, -1.6),
+    shape: thirdStepShape,
+  });
+  world.addBody(thirdStepBody);
+
+  // threejs: BallMesh
+  const ballRadius = 0.2;
+
+  ballMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 20, 20),
+    new THREE.MeshBasicMaterial({
+      // metalness: 0.3,
+      // roughness: 0.4,
+      // color: "#af4f5c",
+      color: "#5e5c64",
+    }),
+  );
+  ballMesh.scale.set(ballRadius, ballRadius, ballRadius);
+  ballMesh.castShadow = true;
+  // ballMesh.position.copy(position);
+  scene.add(ballMesh);
+
+  // cannon: BallBody
+  const ballShape = new CANNON.Sphere(ballRadius);
+  ballBody = new CANNON.Body({
+    mass: 1,
+    shape: ballShape,
+    position: new THREE.Vector3(0, 1, 0), // Start above the floor
+  });
+  world.addBody(ballBody);
 });
 
 /**
@@ -193,17 +316,68 @@ gui.addColor(debugObject, "clearColor").onChange(() => {
   renderer.setClearColor(debugObject.clearColor);
 });
 
+// Move the ball based on key input
+function updateBallMovement(ballBody) {
+  const forceMagnitude = 3; // Adjust force magnitude for smoother movement
+  const force = new CANNON.Vec3(0, 0, 0);
+
+  if (keys["ArrowUp"]) {
+    force.z = -forceMagnitude;
+  }
+  if (keys["ArrowDown"]) {
+    force.z = forceMagnitude;
+  }
+  if (keys["ArrowLeft"]) {
+    force.x = -forceMagnitude;
+  }
+  if (keys["ArrowRight"]) {
+    force.x = forceMagnitude;
+  }
+
+  // Apply force to the ball
+  ballBody.applyForce(force, ballBody.position);
+}
+
 /**
  * Animate
  */
 const clock = new THREE.Clock();
+let oldElapsedTime = 0;
 
 const tick = () => {
   const elapsedTime = clock.getElapsedTime();
+  const deltaTime = elapsedTime - oldElapsedTime;
+  oldElapsedTime = elapsedTime;
+
+  // Update physics world
+  world.step(1 / 60, deltaTime, 3);
+
+  if (ballBody) {
+    updateBallMovement(ballBody);
+    // if (ballBody.position.z == -2) {
+    //   ballBody.applyForce(new CANNON.Vec3(0, 0, 100), ballBody.position);
+    // }
+    if (Math.round(ballBody.position.z) === -2) {
+      ballBody.applyForce(new CANNON.Vec3(0, 0, -1000), ballBody.position);
+    }
+
+    if (ballBody.position.y < -30) {
+      ballBody.velocity.set(0, 0, 0);
+      ballBody.force.set(0, 0, 0);
+      ballBody.torque.set(0, 0, 0);
+      ballBody.angularVelocity.set(0, 0, 0);
+
+      ballBody.position.set(0, 0.1, 0);
+    }
+
+    ballMesh.position.copy(ballBody.position);
+  }
 
   // Update materials
   firefliesMaterial.uniforms.uTime.value = elapsedTime;
   portalLightMaterial.uniforms.uTime.value = elapsedTime;
+
+  // Move the ball based on key input
 
   // Update controls
   controls.update();
